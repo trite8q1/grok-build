@@ -4560,6 +4560,65 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::RewindPreview { agent_id, session_id, target_prompt_index, mode } => {
+            let tx = acp_tx.clone();
+            tasks
+                .spawn(async move {
+                    let request = acp::ExtRequest::new(
+                        "x.ai/rewind/execute",
+                        serde_json::value::to_raw_value(
+                                &rewind_execute_params(
+                                    session_id.0.as_ref(),
+                                    target_prompt_index,
+                                    mode.as_wire(),
+                                    false,
+                                ),
+                            )
+                            .expect("serialize rewind/execute preview params")
+                            .into(),
+                    );
+                    match acp_send(request, &tx).await {
+                        Ok(resp) => {
+                            let wrapper: serde_json::Value = serde_json::from_str(
+                                    resp.0.get(),
+                                )
+                                .unwrap_or_default();
+                            let result_val = wrapper
+                                .get("result")
+                                .cloned()
+                                .unwrap_or(wrapper.clone());
+                            match serde_json::from_value::<
+                                crate::views::rewind::RewindResponse,
+                            >(result_val) {
+                                Ok(r) => {
+                                    TaskResult::RewindPreviewComplete {
+                                        agent_id,
+                                        response: r,
+                                        target_prompt_index,
+                                        mode,
+                                    }
+                                }
+                                Err(e) => {
+                                    TaskResult::RewindPreviewFailed {
+                                        agent_id,
+                                        error: format!("invalid response: {e}"),
+                                        target_prompt_index,
+                                        mode,
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            TaskResult::RewindPreviewFailed {
+                                agent_id,
+                                error: sanitize_user_error(&e.to_string()),
+                                target_prompt_index,
+                                mode,
+                            }
+                        }
+                    }
+                });
+        }
         Effect::RewindExecute { agent_id, session_id, target_prompt_index, mode } => {
             let tx = acp_tx.clone();
             tasks
@@ -4570,7 +4629,8 @@ pub(crate) fn execute(
                                 &rewind_execute_params(
                                     session_id.0.as_ref(),
                                     target_prompt_index,
-                                    &mode,
+                                    mode.as_wire(),
+                                    true,
                                 ),
                             )
                             .expect("serialize rewind/execute params")
@@ -5340,16 +5400,17 @@ pub(crate) fn cancel_notification_meta(
     }
     meta
 }
-pub(crate) const REWIND_MODE_WIRE: &str = "conversation_only";
+/// Params for `x.ai/rewind/execute`. `force: false` is a pure dry run (the preview); `force: true` commits.
 pub(crate) fn rewind_execute_params(
     session_id: &str,
     target_prompt_index: usize,
     mode: &str,
+    force: bool,
 ) -> serde_json::Value {
     serde_json::json!({
         "sessionId": session_id,
         "targetPromptIndex": target_prompt_index,
-        "force": true,
+        "force": force,
         "mode": mode,
     })
 }

@@ -141,7 +141,7 @@ Alias: `/title`. `/rename --auto` clears a manual title and re-enables auto-titl
 
 - **Both conversation and file changes** (`a`)
 - **Conversation only** (`c`)
-- **File changes only** (`f`), when that turn (or later ones) has tracked file edits
+- **File changes only** (`f`), dimmed unless that turn or a later one has tracked file edits
 
 ```
 /rewind
@@ -150,12 +150,18 @@ Alias: `/title`. `/rename --auto` clears a manual title and re-enables auto-titl
 
 When you run `/rewind` or `/undo` (or press **Esc Esc** within 800ms while idle with an empty prompt and conversation messages), Grok:
 
-1. Shows a list of rewind points (one per user prompt)
+1. Shows a list of rewind points (one per user prompt), with the number of files each turn snapshotted
 2. Lets you select which point to rewind to
 3. Asks what to rewind (conversation, files, or both)
 4. Applies that restore
 
-When **Confirm before rewind** is on (default in `/settings`), the mode pick is followed by Yes / Yes, and don't ask again / No. File restore uses the session's rewind snapshots (edit-tool writes). It does not undo shell or manual edits.
+Whenever there are tracked file changes to restore, **Both** and **File changes only** preview first: Grok lists the files it would revert, flags any that changed outside the session (modified, deleted, or added), and waits for `y` to confirm. `Bksp` goes back to the mode list and `Esc` leaves without writing anything. **Both** on a turn with no tracked file changes has nothing to preview, so it behaves like **Conversation only**.
+
+**Conversation only** writes nothing to disk, so it is gated by the **Confirm before rewind** setting instead (default on in `/settings`): Yes / Yes, and don't ask again / No. Rewinding the conversation to the very first prompt is a special case: it clears every file snapshot, so the file changes from the removed turns stay on disk and can never be undone with `/rewind`. Grok warns before doing that.
+
+Inline edit-and-resubmit (editing a past prompt in place) enters the same flow, pre-targeted at that prompt, and offers **Both** or **Conversation only**; the edited prompt is resubmitted once the rewind lands.
+
+File restore uses the session's rewind snapshots, which cover edit-tool writes only. It does not undo shell commands or edits you made yourself.
 
 ---
 

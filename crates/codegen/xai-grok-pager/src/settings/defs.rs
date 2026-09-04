@@ -609,8 +609,9 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Editor,
             owner: SettingOwner::Shared,
             label: "Confirm before rewind",
-            description: "Ask before rewinding conversation history. Turn off to rewind \
-                          immediately when you pick a turn.",
+            description: "Ask before a conversation rewind. Turn off to rewind the \
+                          conversation immediately after you choose what to restore. File \
+                          restores always show a preview first.",
             keywords: &["rewind", "confirm", "undo", "history", "ask", "prompt"],
             kind: SettingKind::Bool {
                 default: ui_default.confirm_before_rewind_enabled(),

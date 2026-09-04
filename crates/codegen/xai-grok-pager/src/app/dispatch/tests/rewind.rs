@@ -186,11 +186,72 @@ fn rewind_point(prompt_index: usize) -> crate::views::rewind::RewindPointInfo {
     }
 }
 
+/// Rewind point carrying `n` tracked file snapshots of its own.
+fn rewind_point_with_files(prompt_index: usize, n: usize) -> crate::views::rewind::RewindPointInfo {
+    crate::views::rewind::RewindPointInfo {
+        prompt_index,
+        created_at: String::new(),
+        num_file_snapshots: n,
+        prompt_preview: Some(format!("turn {prompt_index}")),
+        has_file_changes: n > 0,
+    }
+}
+
 /// Points-loaded task result carrying the fixture's single rewind point.
 fn points_loaded(id: AgentId) -> Action {
     Action::TaskComplete(TaskResult::RewindPointsLoaded {
         agent_id: id,
         points: vec![rewind_point(0)],
+    })
+}
+
+fn points_loaded_with(id: AgentId, points: Vec<crate::views::rewind::RewindPointInfo>) -> Action {
+    Action::TaskComplete(TaskResult::RewindPointsLoaded {
+        agent_id: id,
+        points,
+    })
+}
+
+/// A `force: false` dry-run response: the engine reports `success: false` on every preview,
+/// with `error` set only when there are conflicts.
+fn preview_response(
+    target: usize,
+    clean: &[&str],
+    conflicts: &[(&str, &str)],
+) -> crate::views::rewind::RewindResponse {
+    crate::views::rewind::RewindResponse {
+        success: false,
+        target_prompt_index: target,
+        reverted_files: vec![],
+        clean_files: clean.iter().map(|s| (*s).to_string()).collect(),
+        conflicts: conflicts
+            .iter()
+            .map(|(path, kind)| crate::views::rewind::RewindConflictInfo {
+                path: (*path).to_string(),
+                conflict_type: (*kind).to_string(),
+            })
+            .collect(),
+        error: if conflicts.is_empty() {
+            None
+        } else {
+            Some("External modifications detected. Confirm to revert anyway.".into())
+        },
+        mode: None,
+        prompt_text: None,
+    }
+}
+
+fn preview_complete(
+    id: AgentId,
+    target: usize,
+    mode: crate::views::rewind::RewindMode,
+    response: crate::views::rewind::RewindResponse,
+) -> Action {
+    Action::TaskComplete(TaskResult::RewindPreviewComplete {
+        agent_id: id,
+        response,
+        target_prompt_index: target,
+        mode,
     })
 }
 
@@ -218,7 +279,22 @@ fn drive_inline_submit_to_execute(app: &mut AppView) -> Vec<Effect> {
         "got {effects:?}"
     );
     dispatch(points_loaded(id), app);
-    // Confirm-before-rewind (default on) gates every target, including 0.
+    // The mode question comes first; inline resubmit hides the files-only row.
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::ModeSelect {
+            offer_files_only: false,
+            ..
+        }
+    ));
+    dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        app,
+    );
+    // Confirm-before-rewind (default on) gates every conversation rewind, including at 0.
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm { .. }
@@ -270,9 +346,10 @@ fn inline_edit_submit_with_unchanged_text_closes_editor() {
     assert!(agent.scrollback.inline_edit_height().is_none());
 }
 
-/// Points loaded with a pre-selected target skip the picker and open confirm when the setting is on; the editor stays open behind it.
+/// Points loaded with a pre-selected target skip the picker and open the mode question; the editor stays open behind it.
+/// The files-only row is hidden inline, because the conversation rewind is a given there.
 #[test]
-fn inline_edit_points_loaded_opens_target_zero_confirm_over_open_editor() {
+fn inline_edit_points_loaded_opens_target_zero_mode_select_over_open_editor() {
     let mut app = app_mid_inline_edit("fix the bug properly");
     let id = AgentId(0);
     dispatch(Action::InlineEditSubmit, &mut app);
@@ -280,14 +357,15 @@ fn inline_edit_points_loaded_opens_target_zero_confirm_over_open_editor() {
     let effects = dispatch(points_loaded(id), &mut app);
     assert!(
         effects.is_empty(),
-        "confirm setting on waits for Yes/No, got {effects:?}"
+        "the mode question waits for a pick, got {effects:?}"
     );
 
     let agent = &app.agents[&id];
     assert!(matches!(
         agent.rewind_state.as_ref().unwrap().phase,
-        crate::views::rewind::RewindPhase::Confirm {
+        crate::views::rewind::RewindPhase::ModeSelect {
             target_prompt_index: 0,
+            offer_files_only: false,
             ..
         }
     ));
@@ -295,9 +373,9 @@ fn inline_edit_points_loaded_opens_target_zero_confirm_over_open_editor() {
     assert!(agent.pending_inline_resubmit.is_none());
 }
 
-/// Classic `/rewind` with a selected turn also lands on the confirm when confirm-before-rewind is on (default).
+/// Classic `/rewind` with a selected turn lands on the mode question, files-only row offered.
 #[test]
-fn classic_rewind_target_zero_opens_confirm() {
+fn classic_rewind_target_zero_opens_mode_select() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     {
@@ -320,13 +398,15 @@ fn classic_rewind_target_zero_opens_confirm() {
     let effects = dispatch(points_loaded(id), &mut app);
     assert!(
         effects.is_empty(),
-        "confirm setting on waits for Yes/No, got {effects:?}"
+        "the mode question waits for a pick, got {effects:?}"
     );
 
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
-        crate::views::rewind::RewindPhase::Confirm {
+        crate::views::rewind::RewindPhase::ModeSelect {
             target_prompt_index: 0,
+            offer_files_only: true,
+            has_file_changes: false,
             ..
         }
     ));
@@ -410,6 +490,7 @@ fn picker_select_nonzero_target_executes_immediately_when_confirm_off() {
         }
     ));
 
+    // No tracked edits at or after turn 1, so "both" moves no files and needs no preview.
     let effects = dispatch(
         Action::RewindSelectMode {
             target: 1,
@@ -422,16 +503,17 @@ fn picker_select_nonzero_target_executes_immediately_when_confirm_off() {
             &effects[0],
             Effect::RewindExecute {
                 target_prompt_index: 1,
-                mode,
+                mode: crate::views::rewind::RewindMode::All,
                 ..
-            } if mode == "all"
+            }
         ),
         "got {effects:?}"
     );
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 1
+            target_prompt_index: 1,
+            mode: crate::views::rewind::RewindMode::All
         }
     ));
 }
@@ -533,7 +615,8 @@ fn confirm_yes_executes_rewind() {
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 1
+            target_prompt_index: 1,
+            ..
         }
     ));
 }
@@ -594,12 +677,13 @@ fn confirm_never_ask_persists_setting_off_and_executes() {
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 1
+            target_prompt_index: 1,
+            ..
         }
     ));
 }
 
-/// With confirm off, target 0 executes immediately (same as non-zero targets).
+/// With confirm off, a conversation rewind to target 0 executes immediately (same as non-zero targets).
 #[test]
 fn picker_select_target_zero_executes_immediately_when_confirm_off() {
     let mut app = app_with_two_turns();
@@ -620,7 +704,7 @@ fn picker_select_target_zero_executes_immediately_when_confirm_off() {
     let effects = dispatch(
         Action::RewindSelectMode {
             target: 0,
-            mode: crate::views::rewind::RewindMode::FilesOnly,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
         },
         &mut app,
     );
@@ -629,16 +713,52 @@ fn picker_select_target_zero_executes_immediately_when_confirm_off() {
             &effects[0],
             Effect::RewindExecute {
                 target_prompt_index: 0,
-                mode,
+                mode: crate::views::rewind::RewindMode::ConversationOnly,
                 ..
-            } if mode == "files_only"
+            }
         ),
         "got {effects:?}"
     );
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 0
+            target_prompt_index: 0,
+            ..
+        }
+    ));
+}
+
+/// The files-only row is dim without tracked edits, so choosing it does nothing at all.
+#[test]
+fn files_only_without_tracked_edits_is_a_no_op() {
+    let mut app = app_with_two_turns();
+    app.current_ui.confirm_before_rewind = Some(false);
+    let id = AgentId(0);
+
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        Action::TaskComplete(TaskResult::RewindPointsLoaded {
+            agent_id: id,
+            points: vec![rewind_point(1), rewind_point(0)],
+        }),
+        &mut app,
+    );
+    dispatch(Action::RewindPickerSelect(0), &mut app);
+
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::FilesOnly,
+        },
+        &mut app,
+    );
+    assert!(effects.is_empty(), "nothing to restore, got {effects:?}");
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::ModeSelect {
+            target_prompt_index: 0,
+            has_file_changes: false,
+            ..
         }
     ));
 }
@@ -691,6 +811,13 @@ fn inline_edit_conversation_only_success_resubmits_and_closes_editor() {
     let id = AgentId(0);
     dispatch(Action::InlineEditSubmit, &mut app);
     dispatch(points_loaded(id), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm { .. }
@@ -755,6 +882,13 @@ fn inline_edit_dismiss_from_confirm_keeps_editor() {
     let id = AgentId(0);
     dispatch(Action::InlineEditSubmit, &mut app);
     dispatch(points_loaded(id), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm { .. }
@@ -820,6 +954,15 @@ fn inline_edit_nonzero_target_points_loaded_executes_immediately_when_confirm_of
         }),
         &mut app,
     );
+    assert!(effects.is_empty(), "mode question first, got {effects:?}");
+
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(
         matches!(
             &effects[0],
@@ -834,7 +977,8 @@ fn inline_edit_nonzero_target_points_loaded_executes_immediately_when_confirm_of
     assert!(matches!(
         agent.rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 1
+            target_prompt_index: 1,
+            ..
         }
     ));
     assert_eq!(
@@ -882,6 +1026,14 @@ fn inline_edit_nonzero_target_opens_confirm_when_setting_on() {
         }),
         &mut app,
     );
+    assert!(effects.is_empty(), "mode question first, got {effects:?}");
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(effects.is_empty(), "confirm setting on, got {effects:?}");
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
@@ -902,7 +1054,14 @@ fn inline_edit_target_zero_executes_immediately_when_confirm_off() {
     let id = AgentId(0);
 
     dispatch(Action::InlineEditSubmit, &mut app);
-    let effects = dispatch(points_loaded(id), &mut app);
+    dispatch(points_loaded(id), &mut app);
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(
         matches!(
             &effects[0],
@@ -916,7 +1075,8 @@ fn inline_edit_target_zero_executes_immediately_when_confirm_off() {
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 0
+            target_prompt_index: 0,
+            ..
         }
     ));
     assert_eq!(
@@ -944,7 +1104,14 @@ fn classic_points_loaded_target_zero_executes_when_confirm_off() {
     }
 
     dispatch(Action::Rewind, &mut app);
-    let effects = dispatch(points_loaded(id), &mut app);
+    dispatch(points_loaded(id), &mut app);
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(
         matches!(
             &effects[0],
@@ -958,14 +1125,15 @@ fn classic_points_loaded_target_zero_executes_when_confirm_off() {
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Executing {
-            target_prompt_index: 0
+            target_prompt_index: 0,
+            ..
         }
     ));
 }
 
-/// Dismissing the confirm aborts: the overlay closes, nothing was stashed, and the editor is still open with the edit intact.
+/// Dismissing the mode question aborts: the overlay closes, nothing was stashed, and the editor is still open with the edit intact.
 #[test]
-fn inline_edit_dismiss_from_confirm_returns_to_editor() {
+fn inline_edit_dismiss_from_mode_select_returns_to_editor() {
     let mut app = app_mid_inline_edit("fix the bug properly");
     let id = AgentId(0);
     dispatch(Action::InlineEditSubmit, &mut app);
@@ -1488,4 +1656,686 @@ fn fallback_path_returns_correct_idx_when_prompt_index_is_none() {
         find_user_prompt_entry_for_shell_index(&sb, 2),
         Some(charlie_idx)
     );
+}
+
+/// Two points, the later one carrying tracked edits: any restore to turn 1 moves files.
+fn app_with_tracked_edits() -> AppView {
+    let mut app = app_with_two_turns();
+    let id = AgentId(0);
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point_with_files(1, 2), rewind_point(0)]),
+        &mut app,
+    );
+    app
+}
+
+/// Choosing "both" on a turn with tracked edits previews first: no write goes out yet.
+#[test]
+fn select_all_with_tracked_edits_previews_before_writing() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::ModeSelect {
+            has_file_changes: true,
+            ..
+        }
+    ));
+
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::RewindPreview {
+                target_prompt_index: 1,
+                mode: crate::views::rewind::RewindMode::All,
+                ..
+            }]
+        ),
+        "got {effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::RewindExecute { .. })),
+        "nothing may be written before the confirm"
+    );
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::Previewing {
+            target_prompt_index: 1,
+            mode: crate::views::rewind::RewindMode::All
+        }
+    ));
+}
+
+/// The dry run's clean paths and conflicts become the confirm list; Yes then commits.
+#[test]
+fn preview_complete_lists_files_and_confirm_executes() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+
+    dispatch(
+        preview_complete(
+            id,
+            1,
+            crate::views::rewind::RewindMode::All,
+            preview_response(1, &["src/a.rs"], &[("src/b.rs", "modified_externally")]),
+        ),
+        &mut app,
+    );
+
+    match &app.agents[&id].rewind_state.as_ref().unwrap().phase {
+        crate::views::rewind::RewindPhase::FilePreview {
+            clean_files,
+            conflicts,
+            mode,
+            ..
+        } => {
+            assert_eq!(clean_files, &["src/a.rs".to_string()]);
+            assert_eq!(conflicts.len(), 1);
+            assert_eq!(conflicts[0].path, "src/b.rs");
+            assert_eq!(conflicts[0].label, "modified");
+            assert_eq!(*mode, crate::views::rewind::RewindMode::All);
+        }
+        other => panic!("expected FilePreview, got {other:?}"),
+    }
+
+    let effects = dispatch(Action::RewindConfirm(1), &mut app);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::RewindExecute {
+                target_prompt_index: 1,
+                mode: crate::views::rewind::RewindMode::All,
+                ..
+            }]
+        ),
+        "got {effects:?}"
+    );
+}
+
+/// A preview with no conflicts still comes back `success: false` from the engine.
+/// That is the normal dry-run shape, not a failure.
+#[test]
+fn preview_with_zero_conflicts_lands_on_file_preview() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::FilesOnly,
+        },
+        &mut app,
+    );
+
+    let response = preview_response(1, &["src/a.rs"], &[]);
+    assert!(!response.success);
+    assert!(response.error.is_none());
+    dispatch(
+        preview_complete(id, 1, crate::views::rewind::RewindMode::FilesOnly, response),
+        &mut app,
+    );
+
+    match &app.agents[&id].rewind_state.as_ref().unwrap().phase {
+        crate::views::rewind::RewindPhase::FilePreview {
+            clean_files,
+            conflicts,
+            ..
+        } => {
+            assert_eq!(clean_files, &["src/a.rs".to_string()]);
+            assert!(conflicts.is_empty());
+        }
+        other => panic!("expected FilePreview, got {other:?}"),
+    }
+}
+
+/// A real preview failure (an invalid target, say) comes back with both lists empty.
+#[test]
+fn preview_error_with_empty_lists_shows_the_error() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+
+    let mut response = preview_response(1, &[], &[]);
+    response.error = Some("invalid target".into());
+    dispatch(
+        preview_complete(id, 1, crate::views::rewind::RewindMode::All, response),
+        &mut app,
+    );
+
+    match &app.agents[&id].rewind_state.as_ref().unwrap().phase {
+        crate::views::rewind::RewindPhase::Error { message } => {
+            assert_eq!(message, "invalid target");
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+/// Esc during the dry run ends the flow; the late result must not resurrect it.
+#[test]
+fn late_preview_result_after_dismiss_is_ignored() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+    dispatch(Action::RewindDismiss, &mut app);
+    assert!(app.agents[&id].rewind_state.is_none());
+
+    let effects = dispatch(
+        preview_complete(
+            id,
+            1,
+            crate::views::rewind::RewindMode::All,
+            preview_response(1, &["src/a.rs"], &[]),
+        ),
+        &mut app,
+    );
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert!(
+        app.agents[&id].rewind_state.is_none(),
+        "a stale preview must not reopen the overlay"
+    );
+}
+
+/// Backspace from the file list returns to the mode question with the facts re-derived.
+#[test]
+fn back_from_file_preview_returns_to_mode_select() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+    dispatch(
+        preview_complete(
+            id,
+            1,
+            crate::views::rewind::RewindMode::All,
+            preview_response(1, &["src/a.rs"], &[]),
+        ),
+        &mut app,
+    );
+
+    let effects = dispatch(Action::RewindBackToModeSelect, &mut app);
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::ModeSelect {
+            target_prompt_index: 1,
+            has_file_changes: true,
+            offer_files_only: true,
+            active_idx: 0,
+            ..
+        }
+    ));
+}
+
+/// A files-only rewind leaves the transcript and the composer draft exactly as they were.
+#[test]
+fn files_only_success_keeps_transcript_and_draft() {
+    let mut app = app_with_two_turns();
+    let id = AgentId(0);
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .prompt
+        .set_text("composer draft");
+
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point_with_files(1, 2), rewind_point(0)]),
+        &mut app,
+    );
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::FilesOnly,
+        },
+        &mut app,
+    );
+    dispatch(
+        preview_complete(
+            id,
+            1,
+            crate::views::rewind::RewindMode::FilesOnly,
+            preview_response(1, &["src/a.rs", "src/b.rs"], &[]),
+        ),
+        &mut app,
+    );
+    let effects = dispatch(Action::RewindConfirm(1), &mut app);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::RewindExecute {
+                mode: crate::views::rewind::RewindMode::FilesOnly,
+                ..
+            }]
+        ),
+        "got {effects:?}"
+    );
+
+    let len_before = app.agents[&id].scrollback.len();
+    let pane_before = app.agents[&id].active_pane;
+    dispatch(
+        Action::TaskComplete(TaskResult::RewindExecuteComplete {
+            agent_id: id,
+            response: crate::views::rewind::RewindResponse {
+                success: true,
+                target_prompt_index: 1,
+                reverted_files: vec!["src/a.rs".into(), "src/b.rs".into()],
+                clean_files: vec![],
+                conflicts: vec![],
+                error: None,
+                mode: Some("files_only".into()),
+                prompt_text: Some("turn 1".into()),
+            },
+        }),
+        &mut app,
+    );
+
+    let agent = &app.agents[&id];
+    assert_eq!(
+        agent.scrollback.len(),
+        len_before,
+        "a files-only rewind must not truncate the transcript"
+    );
+    assert_eq!(
+        agent.prompt.text(),
+        "composer draft",
+        "the draft comes back untouched; prompt_text is ignored"
+    );
+    assert_eq!(
+        agent.toast.as_ref().map(|(m, _)| m.as_str()),
+        Some("Reverted 2 files")
+    );
+    assert_eq!(
+        agent.active_pane, pane_before,
+        "a files-only rewind must not steal focus back to the composer"
+    );
+}
+
+/// A conversation rewind to prompt 0 wipes the snapshots, so the file changes it strands
+/// can never be undone. That gets its own warning before anything happens.
+#[test]
+fn conversation_only_at_zero_with_tracked_edits_warns_about_orphans() {
+    let mut app = app_with_two_turns();
+    let id = AgentId(0);
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point_with_files(1, 2), rewind_point(0)]),
+        &mut app,
+    );
+    dispatch(Action::RewindPickerSelect(0), &mut app);
+
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
+    assert!(effects.is_empty(), "the warning waits, got {effects:?}");
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::OrphanWarning {
+            target_prompt_index: 0,
+            ..
+        }
+    ));
+
+    let effects = dispatch(Action::RewindConfirm(0), &mut app);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::RewindExecute {
+                target_prompt_index: 0,
+                mode: crate::views::rewind::RewindMode::ConversationOnly,
+                ..
+            }]
+        ),
+        "got {effects:?}"
+    );
+}
+
+/// Without tracked edits there is nothing to orphan, so prompt 0 takes the standard confirm.
+#[test]
+fn conversation_only_at_zero_without_tracked_edits_takes_the_confirm() {
+    let mut app = app_with_two_turns();
+    let id = AgentId(0);
+    assert!(app.current_ui.confirm_before_rewind_enabled());
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point(1), rewind_point(0)]),
+        &mut app,
+    );
+    dispatch(Action::RewindPickerSelect(0), &mut app);
+
+    dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::Confirm {
+            target_prompt_index: 0,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+            ..
+        }
+    ));
+}
+
+/// Inline edit-and-resubmit over a turn with tracked edits: the files-only row is hidden,
+/// "both" still previews, and the resubmit fires once the rewind lands.
+#[test]
+fn inline_edit_all_with_tracked_edits_previews_then_resubmits() {
+    let mut app = app_mid_inline_edit("fix the bug properly");
+    let id = AgentId(0);
+    dispatch(Action::InlineEditSubmit, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point_with_files(0, 3)]),
+        &mut app,
+    );
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::ModeSelect {
+            has_file_changes: true,
+            offer_files_only: false,
+            ..
+        }
+    ));
+
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+    assert!(
+        matches!(effects.as_slice(), [Effect::RewindPreview { .. }]),
+        "got {effects:?}"
+    );
+
+    dispatch(
+        preview_complete(
+            id,
+            0,
+            crate::views::rewind::RewindMode::All,
+            preview_response(0, &["src/a.rs"], &[]),
+        ),
+        &mut app,
+    );
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::FilePreview { .. }
+    ));
+
+    let effects = dispatch(Action::RewindConfirm(0), &mut app);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::RewindExecute {
+                mode: crate::views::rewind::RewindMode::All,
+                ..
+            }]
+        ),
+        "got {effects:?}"
+    );
+
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RewindExecuteComplete {
+            agent_id: id,
+            response: crate::views::rewind::RewindResponse {
+                success: true,
+                target_prompt_index: 0,
+                reverted_files: vec!["src/a.rs".into()],
+                clean_files: vec![],
+                conflicts: vec![],
+                error: None,
+                mode: Some("all".into()),
+                prompt_text: Some("fix the bug".into()),
+            },
+        }),
+        &mut app,
+    );
+    assert!(
+        effects.iter().any(
+            |e| matches!(e, Effect::SendPrompt { text, .. } if text == "fix the bug properly")
+        ),
+        "edited prompt must be sent, got {effects:?}"
+    );
+    let agent = &app.agents[&id];
+    assert!(agent.inline_edit.is_none(), "editor closed on success");
+    assert_eq!(
+        agent.toast.as_ref().map(|(m, _)| m.as_str()),
+        Some("Reverted 1 file"),
+        "the file revert still needs a signal behind the resubmit"
+    );
+}
+
+/// A restore to N reverts every path touched at prompt index >= N, so the question is
+/// cumulative over the later points rather than per point.
+#[test]
+fn has_tracked_edits_from_is_cumulative() {
+    use super::super::rewind::has_tracked_edits_from;
+
+    let points = vec![
+        rewind_point_with_files(1, 0),
+        rewind_point_with_files(2, 3),
+        rewind_point_with_files(3, 0),
+    ];
+    assert!(
+        has_tracked_edits_from(&points, 1),
+        "turn 2's edits are inside a restore to turn 1"
+    );
+    assert!(has_tracked_edits_from(&points, 2));
+    assert!(
+        !has_tracked_edits_from(&points, 3),
+        "nothing tracked at or after turn 3"
+    );
+}
+
+/// A dry run abandoned with Esc can still time out later. Its failure carries the target and
+/// mode it was launched with, so it cannot replace whatever flow is on screen by then.
+#[test]
+fn stale_preview_failure_cannot_clobber_a_newer_flow() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+
+    // Start a preview for turn 1, abandon it, then start a fresh one for turn 0.
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+    dispatch(Action::RewindDismiss, &mut app);
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point_with_files(1, 2), rewind_point(0)]),
+        &mut app,
+    );
+    dispatch(Action::RewindPickerSelect(0), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::Previewing {
+            target_prompt_index: 0,
+            ..
+        }
+    ));
+
+    // The abandoned turn-1 request finally errors out.
+    let effects = dispatch(
+        Action::TaskComplete(TaskResult::RewindPreviewFailed {
+            agent_id: id,
+            error: "timed out".into(),
+            target_prompt_index: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        }),
+        &mut app,
+    );
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert!(
+        matches!(
+            app.agents[&id].rewind_state.as_ref().unwrap().phase,
+            crate::views::rewind::RewindPhase::Previewing {
+                target_prompt_index: 0,
+                ..
+            }
+        ),
+        "the live turn-0 preview must survive the stale failure"
+    );
+
+    // The matching failure does land.
+    dispatch(
+        Action::TaskComplete(TaskResult::RewindPreviewFailed {
+            agent_id: id,
+            error: "timed out".into(),
+            target_prompt_index: 0,
+            mode: crate::views::rewind::RewindMode::All,
+        }),
+        &mut app,
+    );
+    match &app.agents[&id].rewind_state.as_ref().unwrap().phase {
+        crate::views::rewind::RewindPhase::Error { message } => assert_eq!(message, "timed out"),
+        other => panic!("expected Error, got {other:?}"),
+    }
+}
+
+/// An older shell may omit `mode` from the execute response. The phase it was launched
+/// from decides what happened, so a files-only rewind still skips the truncation.
+#[test]
+fn success_without_a_mode_falls_back_to_the_executing_phase() {
+    let mut app = app_with_two_turns();
+    let id = AgentId(0);
+    dispatch(Action::RewindShowPicker, &mut app);
+    dispatch(
+        points_loaded_with(id, vec![rewind_point_with_files(1, 1), rewind_point(0)]),
+        &mut app,
+    );
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::FilesOnly,
+        },
+        &mut app,
+    );
+    dispatch(
+        preview_complete(
+            id,
+            1,
+            crate::views::rewind::RewindMode::FilesOnly,
+            preview_response(1, &["src/a.rs"], &[]),
+        ),
+        &mut app,
+    );
+    dispatch(Action::RewindConfirm(1), &mut app);
+
+    let len_before = app.agents[&id].scrollback.len();
+    dispatch(
+        Action::TaskComplete(TaskResult::RewindExecuteComplete {
+            agent_id: id,
+            response: crate::views::rewind::RewindResponse {
+                success: true,
+                target_prompt_index: 1,
+                reverted_files: vec!["src/a.rs".into()],
+                clean_files: vec![],
+                conflicts: vec![],
+                error: None,
+                mode: None,
+                prompt_text: Some("turn 1".into()),
+            },
+        }),
+        &mut app,
+    );
+
+    let agent = &app.agents[&id];
+    assert_eq!(
+        agent.scrollback.len(),
+        len_before,
+        "the Executing phase said files_only, so nothing may be truncated"
+    );
+    assert_eq!(
+        agent.toast.as_ref().map(|(m, _)| m.as_str()),
+        Some("Reverted 1 file")
+    );
+}
+
+/// Confirm is only meaningful from the three phases that offer it. A key or click that
+/// lands after the phase has moved on must not start a rewind.
+#[test]
+fn confirm_outside_a_confirm_phase_does_nothing() {
+    let mut app = app_with_tracked_edits();
+    let id = AgentId(0);
+    dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
+
+    // Still Previewing: the dry run has not come back.
+    let effects = dispatch(Action::RewindConfirm(1), &mut app);
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::Previewing { .. }
+    ));
+
+    // And with no flow at all.
+    dispatch(Action::RewindDismiss, &mut app);
+    let effects = dispatch(Action::RewindConfirm(1), &mut app);
+    assert!(effects.is_empty(), "got {effects:?}");
+    assert!(app.agents[&id].rewind_state.is_none());
 }

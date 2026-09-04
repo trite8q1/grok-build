@@ -22,6 +22,7 @@ use super::prompt::{
 use super::queue::push_and_page_flip;
 use super::rewind::{
     dispatch_rewind_success, handle_rewind_execute_failed, handle_rewind_points_loaded,
+    handle_rewind_preview_complete, handle_rewind_preview_failed,
 };
 use super::router::{dispatch, dispatch_action_result};
 use super::session::foreign::{
@@ -2088,10 +2089,26 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             let Some(agent) = app.agents.get_mut(&agent_id) else {
                 return vec![];
             };
-            agent.rewind_state = None;
+            // An aborted rewind must hand the composer back intact; the stash holds pasted images too
+            if let Some(draft) = agent.rewind_state.take().and_then(|s| s.stashed_draft) {
+                agent.prompt.restore(draft);
+            }
+            agent.rewind_points = None;
             app.show_toast(&format!("Undo failed: {error}"));
             vec![]
         }
+        TaskResult::RewindPreviewComplete {
+            agent_id,
+            response,
+            target_prompt_index,
+            mode,
+        } => handle_rewind_preview_complete(app, agent_id, response, target_prompt_index, mode),
+        TaskResult::RewindPreviewFailed {
+            agent_id,
+            error,
+            target_prompt_index,
+            mode,
+        } => handle_rewind_preview_failed(app, agent_id, error, target_prompt_index, mode),
         TaskResult::RewindExecuteComplete { agent_id, response } => {
             dispatch_rewind_success(app, agent_id, response)
         }

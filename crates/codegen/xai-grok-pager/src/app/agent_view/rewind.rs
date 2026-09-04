@@ -37,7 +37,10 @@ impl AgentView {
         match &rw.phase {
             crate::views::rewind::RewindPhase::Picker { .. }
             | crate::views::rewind::RewindPhase::ModeSelect { .. }
+            | crate::views::rewind::RewindPhase::Previewing { .. }
+            | crate::views::rewind::RewindPhase::FilePreview { .. }
             | crate::views::rewind::RewindPhase::Confirm { .. }
+            | crate::views::rewind::RewindPhase::OrphanWarning { .. }
             | crate::views::rewind::RewindPhase::Executing { .. } => Some(rw.anchor_entry_idx),
             crate::views::rewind::RewindPhase::Loading
             | crate::views::rewind::RewindPhase::CancelOffer { .. }
