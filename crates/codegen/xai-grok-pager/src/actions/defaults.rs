@@ -433,7 +433,7 @@ pub(super) fn default_actions(
             hint_key_display: None,
             requires_confirmation: false,
             long_help: Some(
-                "Rewinds the conversation to an earlier turn, discarding later turns. File changes made after that turn are left as-is.\nPick a turn from the list; a running turn is offered for cancel first. When Confirm before rewind is on (default), each pick asks Yes / Yes, and don't ask again / No. Picking \"Yes, and don't ask again\" turns the setting off in /settings.\nDestructive: later turns are dropped.\nAlso reachable idle with an empty prompt via Esc Esc (within 800ms), same as `/rewind`.",
+                "Rewinds to an earlier turn. Pick a turn from the list (a running turn is offered for cancel first), then choose Both conversation and file changes, Conversation only, or File changes only.\nFile changes only is selectable when that turn or a later one has tracked edit-tool changes, and dimmed otherwise. Any restore that would move files shows the files it would revert and any external conflicts, and asks for confirmation before writing.\nConfirm before rewind (default on) gates the rewinds that write nothing to disk with Yes / Yes, and don't ask again / No; picking \"Yes, and don't ask again\" turns the setting off in /settings.\nUntracked changes (shell commands, edits you made yourself) are not undone.\nDestructive: later turns are dropped.\nAlso reachable idle with an empty prompt via Esc Esc (within 800ms), same as `/rewind`.",
             ),
         },
         ActionDef {

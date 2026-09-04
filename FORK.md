@@ -44,12 +44,15 @@ Both talk to `auth.x.ai` and reuse `~/.grok/auth.json`.
 2. Choose what to restore:
    - `a` Both conversation and file changes
    - `c` Conversation only
-   - `f` File changes only (hidden when that turn has no tracked edits)
-3. If **Confirm before rewind** is on in `/settings`, confirm with Yes / Yes, and don't ask again / No. Backspace returns to the mode list.
+   - `f` File changes only (dimmed unless that turn or a later one has tracked file edits)
+3. Anything that would actually move files previews first: the files it would revert plus any external conflicts, then `y` to confirm or `Bksp` to go back. Nothing is written until you confirm.
+4. Rewinds that write nothing to disk (Conversation only, and Both on a turn with no tracked file changes) are gated by **Confirm before rewind** in `/settings` instead: Yes / Yes, and don't ask again / No.
+
+A conversation-only rewind to the very first prompt clears every file snapshot, so the file changes it strands can never be undone with `/rewind`. That case gets its own warning.
 
 File restore uses session snapshots in `rewind_points.jsonl`. Those snapshots cover the file-edit tools. They do not undo shell (`!`) changes or edits you made yourself.
 
-Inline edit-and-resubmit still rewinds conversation only, then resubmits the edited prompt.
+Inline edit-and-resubmit enters the same flow with Both / Conversation only, then resubmits the edited prompt.
 
 ## Layout
 
