@@ -137,7 +137,11 @@ Alias: `/title`. `/rename --auto` clears a manual title and re-enables auto-titl
 
 ## The /rewind Command
 
-`/rewind` (alias `/undo`) rewinds the conversation to an earlier turn, dropping later turns. File changes made after that turn are left as-is on disk.
+`/rewind` (alias `/undo`) rewinds to an earlier turn. After you pick the turn, you choose what to restore:
+
+- **Both conversation and file changes** (`a`)
+- **Conversation only** (`c`)
+- **File changes only** (`f`), when that turn (or later ones) has tracked file edits
 
 ```
 /rewind
@@ -148,11 +152,10 @@ When you run `/rewind` or `/undo` (or press **Esc Esc** within 800ms while idle 
 
 1. Shows a list of rewind points (one per user prompt)
 2. Lets you select which point to rewind to
-3. Truncates the conversation history to that point
+3. Asks what to rewind (conversation, files, or both)
+4. Applies that restore
 
-When **Confirm before rewind** is on (default in `/settings`), every pick asks for confirmation (Yes / Yes, and don't ask again / No). **Yes, and don't ask again** turns that setting off. With the setting off, picks run immediately.
-
-**Important:** `/rewind` does not restore files on disk. Only conversation history is truncated.
+When **Confirm before rewind** is on (default in `/settings`), the mode pick is followed by Yes / Yes, and don't ask again / No. File restore uses the session's rewind snapshots (edit-tool writes). It does not undo shell or manual edits.
 
 ---
 
@@ -383,6 +386,6 @@ Session history (`updates.jsonl`, `chat_history.jsonl`) dominates disk usage in 
 
 - Use `/new` to start fresh when your current context is no longer relevant.
 - Use `/compact` proactively in long sessions to keep the context window effective.
-- Use `/rewind` to undo mistakes; it rewinds the conversation to an earlier turn (file changes from removed turns are left as-is).
+- Use `/rewind` to undo mistakes; pick a turn, then restore conversation, files, or both.
 - In headless mode, capture the `sessionId` from JSON output and pass it to `-r` to build multi-step automations that maintain context.
 - Check `/session-info` to see how much of your context window has been used.

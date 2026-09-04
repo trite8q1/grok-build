@@ -36,6 +36,7 @@ impl AgentView {
         let rw = self.rewind_state.as_ref()?;
         match &rw.phase {
             crate::views::rewind::RewindPhase::Picker { .. }
+            | crate::views::rewind::RewindPhase::ModeSelect { .. }
             | crate::views::rewind::RewindPhase::Confirm { .. }
             | crate::views::rewind::RewindPhase::Executing { .. } => Some(rw.anchor_entry_idx),
             crate::views::rewind::RewindPhase::Loading
@@ -115,6 +116,10 @@ impl AgentView {
             RewindInput::PickerSelect(prompt_index) => {
                 InputOutcome::Action(Action::RewindPickerSelect(prompt_index))
             }
+            RewindInput::SelectMode(mode, target) => {
+                InputOutcome::Action(Action::RewindSelectMode { target, mode })
+            }
+            RewindInput::BackToModeSelect => InputOutcome::Action(Action::RewindBackToModeSelect),
             RewindInput::MoveUp
             | RewindInput::MoveDown
             | RewindInput::ConfirmCursor

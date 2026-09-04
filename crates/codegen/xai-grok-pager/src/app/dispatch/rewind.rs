@@ -7,7 +7,7 @@ use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::RenderBlock;
 use crate::scrollback::state::ScrollbackState;
 use crate::views::prompt_widget::{PromptWidget, StashedPrompt};
-use crate::views::rewind::{RewindPhase, RewindState};
+use crate::views::rewind::{RewindMode, RewindPhase, RewindState};
 
 /// User prompt that participates in the shell's prompt numbering.
 /// Interjections render as user prompts but the shell never numbers them, so counting them would skew the positional prompt-to-entry mapping.
@@ -166,7 +166,6 @@ pub(super) fn dispatch_rewind_picker_select(app: &mut AppView, prompt_index: usi
     let ActiveView::Agent(id) = app.active_view else {
         return vec![];
     };
-    let confirm = app.current_ui.confirm_before_rewind_enabled();
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
@@ -177,6 +176,7 @@ pub(super) fn dispatch_rewind_picker_select(app: &mut AppView, prompt_index: usi
         },
     );
     let preview = point.and_then(|p| p.prompt_preview.clone());
+    let has_file_changes = point.is_some_and(|p| p.has_file_changes || p.num_file_snapshots > 0);
 
     let anchor = find_user_prompt_entry_for_shell_index(&agent.scrollback, prompt_index);
     if let Some(entry_idx) = anchor {
@@ -184,15 +184,80 @@ pub(super) fn dispatch_rewind_picker_select(app: &mut AppView, prompt_index: usi
     }
 
     let draft = agent.rewind_state.take().and_then(|s| s.stashed_draft);
-    begin_rewind(
+    open_mode_select(
         agent,
-        id,
         prompt_index,
         anchor.unwrap_or(0),
         draft,
         preview,
-        confirm,
+        has_file_changes,
+        true,
     )
+}
+
+pub(super) fn dispatch_rewind_select_mode(
+    app: &mut AppView,
+    target: usize,
+    mode: RewindMode,
+) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let confirm = app.current_ui.confirm_before_rewind_enabled();
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let (anchor, draft, preview, has_file_changes, offer_files_only) =
+        match agent.rewind_state.take() {
+            Some(s) => {
+                let (preview, has_file_changes, offer_files_only) = match s.phase {
+                    RewindPhase::ModeSelect {
+                        prompt_preview,
+                        has_file_changes,
+                        offer_files_only,
+                        ..
+                    }
+                    | RewindPhase::Confirm {
+                        prompt_preview,
+                        has_file_changes,
+                        offer_files_only,
+                        ..
+                    } => (prompt_preview, has_file_changes, offer_files_only),
+                    _ => (None, false, true),
+                };
+                (
+                    s.anchor_entry_idx,
+                    s.stashed_draft,
+                    preview,
+                    has_file_changes,
+                    offer_files_only,
+                )
+            }
+            None => (0, None, None, false, true),
+        };
+    begin_rewind(
+        agent,
+        id,
+        target,
+        anchor,
+        draft,
+        preview,
+        confirm,
+        mode,
+        has_file_changes,
+        offer_files_only,
+    )
+}
+
+pub(super) fn dispatch_rewind_back_to_mode_select(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    back_to_mode_select(agent);
+    vec![]
 }
 
 pub(super) fn dispatch_rewind_cancel_offer(app: &mut AppView) -> Vec<Effect> {
@@ -243,13 +308,19 @@ pub(super) fn dispatch_rewind_confirm(app: &mut AppView, target: usize) -> Vec<E
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
     };
-    let anchor = agent
-        .rewind_state
-        .as_ref()
-        .map(|s| s.anchor_entry_idx)
-        .unwrap_or(0);
+    let (anchor, mode) = match agent.rewind_state.as_ref() {
+        Some(s) => {
+            let mode = match s.phase {
+                RewindPhase::Confirm { mode, .. } => mode,
+                RewindPhase::ModeSelect { .. } => RewindMode::ConversationOnly,
+                _ => RewindMode::ConversationOnly,
+            };
+            (s.anchor_entry_idx, mode)
+        }
+        None => (0, RewindMode::ConversationOnly),
+    };
     let draft = agent.rewind_state.take().and_then(|s| s.stashed_draft);
-    enter_executing(agent, id, target, anchor, draft)
+    enter_executing(agent, id, target, anchor, draft, mode)
 }
 
 /// "Yes, and don't ask again": quiet-persist confirm-before-rewind off, then execute.
@@ -305,6 +376,7 @@ fn enter_executing(
     target: usize,
     anchor: usize,
     draft: Option<StashedPrompt>,
+    mode: RewindMode,
 ) -> Vec<Effect> {
     let Some(session_id) = agent.session.session_id.clone() else {
         if let Some(d) = draft {
@@ -327,7 +399,75 @@ fn enter_executing(
         agent_id,
         session_id,
         target_prompt_index: target,
+        mode: mode.as_wire().to_string(),
     }]
+}
+
+fn open_mode_select(
+    agent: &mut crate::app::agent_view::AgentView,
+    target: usize,
+    anchor: usize,
+    draft: Option<StashedPrompt>,
+    prompt_preview: Option<String>,
+    has_file_changes: bool,
+    offer_files_only: bool,
+) -> Vec<Effect> {
+    agent.rewind_state = Some(RewindState {
+        phase: RewindPhase::ModeSelect {
+            target_prompt_index: target,
+            has_file_changes,
+            offer_files_only,
+            active_idx: 0,
+            prompt_preview,
+        },
+        anchor_entry_idx: anchor,
+        stashed_draft: draft,
+        selected_prompt_index: Some(target),
+    });
+    vec![]
+}
+
+fn back_to_mode_select(agent: &mut crate::app::agent_view::AgentView) {
+    let Some(state) = agent.rewind_state.take() else {
+        return;
+    };
+    let (target, preview, has_file_changes, offer_files_only) = match state.phase {
+        RewindPhase::Confirm {
+            target_prompt_index,
+            prompt_preview,
+            has_file_changes,
+            offer_files_only,
+            ..
+        }
+        | RewindPhase::ModeSelect {
+            target_prompt_index,
+            prompt_preview,
+            has_file_changes,
+            offer_files_only,
+            ..
+        } => (
+            target_prompt_index,
+            prompt_preview,
+            has_file_changes,
+            offer_files_only,
+        ),
+        _ => {
+            agent.rewind_state = Some(state);
+            return;
+        }
+    };
+    agent.rewind_state = Some(RewindState {
+        phase: RewindPhase::ModeSelect {
+            target_prompt_index: target,
+            has_file_changes,
+            offer_files_only,
+            active_idx: 0,
+            prompt_preview: preview,
+        },
+        anchor_entry_idx: state.anchor_entry_idx,
+        stashed_draft: state.stashed_draft,
+        selected_prompt_index: Some(target),
+    });
 }
 
 /// When `confirm` is true, open the confirm dialog for any target; otherwise execute immediately.
@@ -339,6 +479,9 @@ fn begin_rewind(
     draft: Option<StashedPrompt>,
     prompt_preview: Option<String>,
     confirm: bool,
+    mode: RewindMode,
+    has_file_changes: bool,
+    offer_files_only: bool,
 ) -> Vec<Effect> {
     if confirm {
         agent.rewind_state = Some(RewindState {
@@ -346,6 +489,9 @@ fn begin_rewind(
                 target_prompt_index: target,
                 active_idx: 0,
                 prompt_preview,
+                mode,
+                has_file_changes,
+                offer_files_only,
             },
             anchor_entry_idx: anchor,
             stashed_draft: draft,
@@ -353,7 +499,7 @@ fn begin_rewind(
         });
         return vec![];
     }
-    enter_executing(agent, agent_id, target, anchor, draft)
+    enter_executing(agent, agent_id, target, anchor, draft, mode)
 }
 
 pub(super) fn dispatch_inline_edit_submit(app: &mut AppView) -> Vec<Effect> {
@@ -444,29 +590,36 @@ pub(super) fn dispatch_rewind_success(
 
     let target = response.target_prompt_index;
     let stashed_draft = agent.rewind_state.take().and_then(|s| s.stashed_draft);
+    let mode = RewindMode::from_wire(response.mode.as_deref().unwrap_or("conversation_only"));
+    let rewinds_conversation = matches!(mode, RewindMode::All | RewindMode::ConversationOnly);
 
-    // The summary describes turns the rewind just removed (the shell clears its persisted copy on the same branch)
-    // Bump gen so a late SessionMetaFromDisk hydrate cannot restore the pre-rewind summary.json value into the cleared field
-    agent.set_last_turn_summary(None);
-    let target_idx = find_user_prompt_entry_for_shell_index(&agent.scrollback, target);
-    if let Some(anchor_idx) = target_idx {
-        let removed = agent.scrollback.remove_from(anchor_idx);
-        // Explicit drop BEFORE the purge: the rewound tail must be freed for the release below to return its pages
-        // (Entries and their render caches are potentially most of a long transcript.)
-        drop(removed);
-        crate::memory_release::release_retained_memory("rewind-truncate");
+    if rewinds_conversation {
+        // The summary describes turns the rewind just removed (the shell clears its persisted copy on the same branch)
+        // Bump gen so a late SessionMetaFromDisk hydrate cannot restore the pre-rewind summary.json value into the cleared field
+        agent.set_last_turn_summary(None);
+        let target_idx = find_user_prompt_entry_for_shell_index(&agent.scrollback, target);
+        if let Some(anchor_idx) = target_idx {
+            let removed = agent.scrollback.remove_from(anchor_idx);
+            // Explicit drop BEFORE the purge: the rewound tail must be freed for the release below to return its pages
+            drop(removed);
+            crate::memory_release::release_retained_memory("rewind-truncate");
+        }
     }
 
     // An inline resubmit skips the confirmation; the edited prompt re-appearing at the same spot is self-explanatory
     if inline_resubmit.is_none() {
-        const MSG: &str = "Reverted conversation";
+        let msg = match mode {
+            RewindMode::All => "Reverted conversation and files",
+            RewindMode::FilesOnly => "Reverted files",
+            RewindMode::ConversationOnly => "Reverted conversation",
+        };
         if app.screen_mode.is_minimal() {
             // Minimal has no toast area and can't erase committed lines, so the confirmation stays in scrollback there
             agent
                 .scrollback
-                .push_block(RenderBlock::system(MSG.to_string()));
+                .push_block(RenderBlock::system(msg.to_string()));
         } else {
-            agent.show_toast(MSG);
+            agent.show_toast(msg);
         }
     }
 
@@ -475,8 +628,12 @@ pub(super) fn dispatch_rewind_success(
         if let Some(draft) = stashed_draft {
             agent.prompt.restore(draft);
         }
-    } else if let Some(ref prompt_text) = response.prompt_text {
-        agent.prompt.set_text(prompt_text);
+    } else if rewinds_conversation {
+        if let Some(ref prompt_text) = response.prompt_text {
+            agent.prompt.set_text(prompt_text);
+        } else if let Some(draft) = stashed_draft {
+            agent.prompt.restore(draft);
+        }
     } else if let Some(draft) = stashed_draft {
         agent.prompt.restore(draft);
     }
@@ -558,6 +715,9 @@ pub(super) fn handle_rewind_points_loaded(
                 draft,
                 preview,
                 confirm,
+                RewindMode::ConversationOnly,
+                false,
+                false,
             );
         }
     }

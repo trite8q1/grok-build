@@ -381,7 +381,7 @@ fn app_with_two_turns() -> AppView {
     app
 }
 
-/// With confirm-before-rewind off, picking a non-zero turn executes immediately.
+/// With confirm-before-rewind off, picking a turn opens mode select; choosing a mode executes.
 #[test]
 fn picker_select_nonzero_target_executes_immediately_when_confirm_off() {
     let mut app = app_with_two_turns();
@@ -402,13 +402,30 @@ fn picker_select_nonzero_target_executes_immediately_when_confirm_off() {
     ));
 
     let effects = dispatch(Action::RewindPickerSelect(1), &mut app);
+    assert!(effects.is_empty(), "mode select first, got {effects:?}");
+    assert!(matches!(
+        app.agents[&id].rewind_state.as_ref().unwrap().phase,
+        crate::views::rewind::RewindPhase::ModeSelect {
+            target_prompt_index: 1,
+            ..
+        }
+    ));
+
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::All,
+        },
+        &mut app,
+    );
     assert!(
         matches!(
             &effects[0],
             Effect::RewindExecute {
                 target_prompt_index: 1,
+                mode,
                 ..
-            }
+            } if mode == "all"
         ),
         "got {effects:?}"
     );
@@ -420,7 +437,7 @@ fn picker_select_nonzero_target_executes_immediately_when_confirm_off() {
     ));
 }
 
-/// With confirm-before-rewind on (default), picking a non-zero target opens confirm.
+/// With confirm-before-rewind on (default), picking a turn opens mode select.
 #[test]
 fn picker_select_nonzero_target_opens_confirm_when_setting_on() {
     let mut app = app_with_two_turns();
@@ -437,15 +454,11 @@ fn picker_select_nonzero_target_opens_confirm_when_setting_on() {
     );
 
     let effects = dispatch(Action::RewindPickerSelect(1), &mut app);
-    assert!(
-        effects.is_empty(),
-        "confirm setting on waits, got {effects:?}"
-    );
+    assert!(effects.is_empty(), "mode select waits, got {effects:?}");
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
-        crate::views::rewind::RewindPhase::Confirm {
+        crate::views::rewind::RewindPhase::ModeSelect {
             target_prompt_index: 1,
-            active_idx: 0,
             ..
         }
     ));
@@ -467,15 +480,11 @@ fn picker_select_target_zero_opens_confirm() {
     );
 
     let effects = dispatch(Action::RewindPickerSelect(0), &mut app);
-    assert!(
-        effects.is_empty(),
-        "confirm setting on waits for Yes/No, got {effects:?}"
-    );
+    assert!(effects.is_empty(), "mode select waits, got {effects:?}");
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
-        crate::views::rewind::RewindPhase::Confirm {
+        crate::views::rewind::RewindPhase::ModeSelect {
             target_prompt_index: 0,
-            active_idx: 0,
             ..
         }
     ));
@@ -496,6 +505,13 @@ fn confirm_yes_executes_rewind() {
         &mut app,
     );
     dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
     assert!(matches!(
         app.agents[&id].rewind_state.as_ref().unwrap().phase,
         crate::views::rewind::RewindPhase::Confirm {
@@ -539,6 +555,13 @@ fn confirm_never_ask_persists_setting_off_and_executes() {
         &mut app,
     );
     dispatch(Action::RewindPickerSelect(1), &mut app);
+    dispatch(
+        Action::RewindSelectMode {
+            target: 1,
+            mode: crate::views::rewind::RewindMode::ConversationOnly,
+        },
+        &mut app,
+    );
 
     let effects = dispatch(Action::RewindConfirmNeverAsk(1), &mut app);
     assert!(
@@ -594,13 +617,22 @@ fn picker_select_target_zero_executes_immediately_when_confirm_off() {
     );
 
     let effects = dispatch(Action::RewindPickerSelect(0), &mut app);
+    assert!(effects.is_empty(), "mode select first, got {effects:?}");
+    let effects = dispatch(
+        Action::RewindSelectMode {
+            target: 0,
+            mode: crate::views::rewind::RewindMode::FilesOnly,
+        },
+        &mut app,
+    );
     assert!(
         matches!(
             &effects[0],
             Effect::RewindExecute {
                 target_prompt_index: 0,
+                mode,
                 ..
-            }
+            } if mode == "files_only"
         ),
         "got {effects:?}"
     );

@@ -7,7 +7,7 @@ impl SlashCommand for RewindCommand {
     slash_meta! {
         name: "rewind",
         aliases: ["undo"],
-        description: "Rewind to a previous turn",
+        description: "Rewind conversation and/or file changes to a previous turn",
         usage: "/rewind",
         session_scoped: true,
     }
