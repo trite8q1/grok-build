@@ -2671,13 +2671,14 @@ fn worktree_resume_failure_sanitizes_detail_before_hint() {
     assert_eq!(id_msg, "couldn't resume worktree session: No space left on device");
 }
 #[test]
-fn rewind_execute_params_sends_conversation_only_with_force() {
-    let params = rewind_execute_params("sess-1", 3);
+fn rewind_execute_params_sends_mode_with_force() {
+    let params = rewind_execute_params("sess-1", 3, REWIND_MODE_WIRE);
     assert_eq!(params["sessionId"], "sess-1");
     assert_eq!(params["targetPromptIndex"], 3);
     assert_eq!(params["force"], true);
-    assert_eq!(params["mode"], REWIND_MODE_WIRE);
     assert_eq!(params["mode"], "conversation_only");
+    let all = rewind_execute_params("sess-1", 3, "all");
+    assert_eq!(all["mode"], "all");
 }
 /// Exact wire bytes of the one-shot request: the shell's `upload_trace_offer_gate_allows`
 /// relaxation keys off this exact snake_case value, so the shape is a cross-crate contract.

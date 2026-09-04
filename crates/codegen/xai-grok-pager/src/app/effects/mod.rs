@@ -4560,7 +4560,7 @@ pub(crate) fn execute(
                     }
                 });
         }
-        Effect::RewindExecute { agent_id, session_id, target_prompt_index } => {
+        Effect::RewindExecute { agent_id, session_id, target_prompt_index, mode } => {
             let tx = acp_tx.clone();
             tasks
                 .spawn(async move {
@@ -4570,6 +4570,7 @@ pub(crate) fn execute(
                                 &rewind_execute_params(
                                     session_id.0.as_ref(),
                                     target_prompt_index,
+                                    &mode,
                                 ),
                             )
                             .expect("serialize rewind/execute params")
@@ -5343,12 +5344,13 @@ pub(crate) const REWIND_MODE_WIRE: &str = "conversation_only";
 pub(crate) fn rewind_execute_params(
     session_id: &str,
     target_prompt_index: usize,
+    mode: &str,
 ) -> serde_json::Value {
     serde_json::json!({
         "sessionId": session_id,
         "targetPromptIndex": target_prompt_index,
         "force": true,
-        "mode": REWIND_MODE_WIRE,
+        "mode": mode,
     })
 }
 /// Build the `x.ai/interject` params.

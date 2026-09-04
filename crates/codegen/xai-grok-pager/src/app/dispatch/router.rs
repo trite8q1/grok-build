@@ -50,9 +50,10 @@ use super::prompt::{
 use super::queue;
 use super::queue::dispatch_drain_queue;
 use super::rewind::{
-    dispatch_inline_edit_submit, dispatch_rewind, dispatch_rewind_cancel_offer,
-    dispatch_rewind_confirm, dispatch_rewind_confirm_never_ask, dispatch_rewind_dismiss,
-    dispatch_rewind_dismiss_error, dispatch_rewind_picker_select, dispatch_rewind_show_picker,
+    dispatch_inline_edit_submit, dispatch_rewind, dispatch_rewind_back_to_mode_select,
+    dispatch_rewind_cancel_offer, dispatch_rewind_confirm, dispatch_rewind_confirm_never_ask,
+    dispatch_rewind_dismiss, dispatch_rewind_dismiss_error, dispatch_rewind_picker_select,
+    dispatch_rewind_select_mode, dispatch_rewind_show_picker,
 };
 use super::session::foreign::dispatch_fetch_session_list;
 use super::session::fork::{
@@ -1529,6 +1530,8 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::RewindPickerSelect(prompt_index) => {
             dispatch_rewind_picker_select(app, prompt_index)
         }
+        Action::RewindSelectMode { target, mode } => dispatch_rewind_select_mode(app, target, mode),
+        Action::RewindBackToModeSelect => dispatch_rewind_back_to_mode_select(app),
         Action::RewindConfirm(target) => dispatch_rewind_confirm(app, target),
         Action::RewindConfirmNeverAsk(target) => dispatch_rewind_confirm_never_ask(app, target),
         Action::RewindCancelOffer => dispatch_rewind_cancel_offer(app),

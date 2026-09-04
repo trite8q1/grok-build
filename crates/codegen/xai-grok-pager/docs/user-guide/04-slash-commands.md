@@ -49,7 +49,7 @@ Branch the current session into a new agent, keeping history up to this point.
 
 ### `/rewind` (alias: `/undo`)
 
-Roll the conversation back to an earlier turn and discard everything after it. `/undo` is the same command.
+Rewind to an earlier turn. After you pick the turn, choose conversation, files, or both. `/undo` is the same command.
 
 ### `/copy`
 
