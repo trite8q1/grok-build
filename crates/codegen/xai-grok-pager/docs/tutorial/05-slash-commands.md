@@ -11,7 +11,7 @@ A few worth knowing on day one:
 | `/new` | Start a fresh session |
 | `/compact` | Compress a long conversation to free up context |
 | `/btw` | Send Grok an aside *without* interrupting its current task |
-| `/rewind` (alias `/undo`) | Rewind the conversation to an earlier turn |
+| `/rewind` (alias `/undo`) | Rewind conversation and/or files to an earlier turn |
 | `/docs` | Full How-to Guides, in the TUI or on the web |
 | `/feedback` | Send feedback to the team |
 
