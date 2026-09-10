@@ -152,6 +152,17 @@ git rebase --abort
 
 Keep the rewind change as one commit on branch `g` so rebases stay small.
 
+## Upstream deletions
+
+`crates/codegen/xai-grok-pager/tests/registered_features_are_documented.rs` pulls in `docs/internal/25-enterprise.md` and `docs/internal/22-environment-variables.md` with `include_str!`. xAI strips `docs/internal/` from the public repo, so the target cannot compile here and a bare `cargo test -p xai-grok-pager` dies before running anything. Deleted on `g`.
+
+Restore it if upstream ever ships those docs:
+
+```bash
+git checkout upstream/main -- \
+  crates/codegen/xai-grok-pager/tests/registered_features_are_documented.rs
+```
+
 ## Why not overwrite `grok`
 
 `~/.grok/bin/grok` is a symlink the official updater swaps. If this build lived there, `grok update` and launch auto-update would replace it. The `g` wrapper sets `GROK_DISABLE_AUTOUPDATER=1` for the same reason: a successful official update would restart into `~/.grok/bin/grok` and drop the fork for that session.
