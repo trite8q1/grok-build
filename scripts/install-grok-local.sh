@@ -28,6 +28,14 @@ cat > "$BIN_DIR/$CMD_NAME" <<EOF
 #!/bin/sh
 # Forked Grok Build with file-restore rewind. Does not replace official grok.
 export GROK_DISABLE_AUTOUPDATER=1
+
+if [ -z "\${GROK_THEME:-}" ] && [ -z "\${LC_GROK_THEME:-}" ] \
+  && [ -L "\$HOME/.config/ghostty/surface/current" ] \
+  && [ "\$(basename "\$(readlink "\$HOME/.config/ghostty/surface/current")")" = glass ]; then
+  export GROK_TERMINAL_THEME="\${GROK_TERMINAL_THEME:-1}"
+  export GROK_THEME=terminal
+fi
+
 exec "$LIB_DIR/xai-grok-pager" "\$@"
 EOF
 chmod +x "$BIN_DIR/$CMD_NAME"
