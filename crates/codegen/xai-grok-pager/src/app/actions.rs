@@ -904,6 +904,11 @@ pub enum Action {
     Rewind,
     RewindShowPicker,
     RewindPickerSelect(usize),
+    RewindSelectMode {
+        target: usize,
+        mode: crate::views::rewind::RewindMode,
+    },
+    RewindBackToModeSelect,
     RewindConfirm(usize),
     /// Confirm rewind and turn off `confirm_before_rewind` for future rewinds.
     RewindConfirmNeverAsk(usize),
@@ -2079,10 +2084,18 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
     },
+    /// Dry run (`force: false`): report what a restore would touch without writing anything.
+    RewindPreview {
+        agent_id: AgentId,
+        session_id: acp::SessionId,
+        target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
+    },
     RewindExecute {
         agent_id: AgentId,
         session_id: acp::SessionId,
         target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
     },
     /// Fetch billing/credit usage from the agent's `x.ai/billing` extension.
     /// When `silent` is true the result updates `credit_balance` without pushing a system message into scrollback.
@@ -2984,6 +2997,22 @@ pub enum TaskResult {
     RewindPointsFailed {
         agent_id: AgentId,
         error: String,
+    },
+    /// Dry-run result: the files a restore would touch, plus any external conflicts.
+    /// `target_prompt_index` and `mode` echo the request so a stale result can be ignored.
+    RewindPreviewComplete {
+        agent_id: AgentId,
+        response: crate::views::rewind::RewindResponse,
+        target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
+    },
+    /// A dry run that never produced a result. Echoes the request so a stale failure
+    /// (an abandoned preview timing out) cannot clobber a newer flow.
+    RewindPreviewFailed {
+        agent_id: AgentId,
+        error: String,
+        target_prompt_index: usize,
+        mode: crate::views::rewind::RewindMode,
     },
     RewindExecuteComplete {
         agent_id: AgentId,

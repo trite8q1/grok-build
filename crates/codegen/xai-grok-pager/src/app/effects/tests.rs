@@ -2670,14 +2670,25 @@ fn worktree_resume_failure_sanitizes_detail_before_hint() {
     let id_msg = worktree_resume_failure_message(None, &sanitize_user_error(raw));
     assert_eq!(id_msg, "couldn't resume worktree session: No space left on device");
 }
+/// Every mode reaches the wire as its snake_case string, and `force` distinguishes the
+/// preview dry run from the commit.
 #[test]
-fn rewind_execute_params_sends_conversation_only_with_force() {
-    let params = rewind_execute_params("sess-1", 3);
+fn rewind_execute_params_sends_mode_with_force() {
+    use crate::views::rewind::RewindMode;
+    let params = rewind_execute_params("sess-1", 3, RewindMode::ConversationOnly.as_wire(), true);
     assert_eq!(params["sessionId"], "sess-1");
     assert_eq!(params["targetPromptIndex"], 3);
     assert_eq!(params["force"], true);
-    assert_eq!(params["mode"], REWIND_MODE_WIRE);
     assert_eq!(params["mode"], "conversation_only");
+
+    let all = rewind_execute_params("sess-1", 3, RewindMode::All.as_wire(), true);
+    assert_eq!(all["mode"], "all");
+    let files = rewind_execute_params("sess-1", 3, RewindMode::FilesOnly.as_wire(), true);
+    assert_eq!(files["mode"], "files_only");
+
+    let preview = rewind_execute_params("sess-1", 3, RewindMode::All.as_wire(), false);
+    assert_eq!(preview["force"], false, "the preview must not write");
+    assert_eq!(preview["mode"], "all");
 }
 /// Exact wire bytes of the one-shot request: the shell's `upload_trace_offer_gate_allows`
 /// relaxation keys off this exact snake_case value, so the shape is a cross-crate contract.
